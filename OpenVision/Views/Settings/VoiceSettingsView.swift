@@ -80,6 +80,19 @@ struct VoiceSettingsView: View {
                 }
             }
 
+            // Language Section
+            Section {
+                Picker("Language", selection: $settingsManager.settings.speechLanguage) {
+                    ForEach(SpeechLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+            } header: {
+                Text("Recognition Language")
+            } footer: {
+                Text("The language you speak commands in. The wake phrase works in it too (\"Ok Visão\" in Portuguese), and the Apple voice follows it unless you pick another one.")
+            }
+
             // Microphone Section
             Section {
                 Toggle(isOn: $settingsManager.settings.preferGlassesMic) {
@@ -117,6 +130,17 @@ struct VoiceSettingsView: View {
                     ForEach(TTSEngineType.allCases) { engine in
                         Text(engine.displayName).tag(engine)
                     }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Speed")
+                    Picker("Speed", selection: $settingsManager.settings.speechRate) {
+                        ForEach(SpeechRate.choices, id: \.self) { rate in
+                            Text(rate.formatted(.number.precision(.fractionLength(0...2))) + "x").tag(rate)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 switch settingsManager.settings.ttsEngine {
@@ -177,6 +201,16 @@ struct VoiceSettingsView: View {
                     accountRow("OpenAI API Key", icon: "key", connected: settingsManager.settings.isOpenAIAPIAvailable) {
                         OpenAISettingsView()
                     }
+                case .hermes:
+                    Button("Play Sample") {
+                        Task { await CloudTTSService.hermes.speak(settingsManager.settings.speechLanguage == .portugueseBrazil
+                            ? "Olá! É assim que eu soo. Sou o seu assistente." : NeuralVoiceListView.sampleText,
+                            voice: "hermes") }
+                    }
+                    .disabled(!CloudTTSService.hermes.isReady)
+                    accountRow("Hermes Account", icon: "server.rack", connected: CloudTTSService.hermes.isReady) {
+                        HermesSettingsView()
+                    }
                 }
             } header: {
                 Text("Output Voice")
@@ -188,6 +222,8 @@ struct VoiceSettingsView: View {
                     Text("Grok is xAI's natural cloud voice. It uses your Grok sign-in (SuperGrok or API key), follows the language of each reply, and needs an internet connection. Replies are sent to xAI to be spoken.")
                 case .openAI:
                     Text("OpenAI's natural cloud voice (\(CloudTTSService.openAITTSModel)). It needs an OpenAI API key with credits — a ChatGPT subscription doesn't cover speech. Replies are sent to OpenAI to be spoken.")
+                case .hermes:
+                    Text("Hermes speaks in the voice your agent is set up with (tts: in its config.yaml, e.g. ElevenLabs), the same voice it uses in your chats. It needs the Username and Password connection to Hermes. Replies are sent to your Hermes server to be spoken.")
                 case .appleSystem:
                     Text("Apple's built-in system voice. For higher quality, download a Premium/Enhanced voice in iOS Settings → Accessibility → Spoken Content.")
                 }

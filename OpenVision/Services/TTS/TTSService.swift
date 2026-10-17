@@ -41,7 +41,7 @@ final class TTSService: NSObject, ObservableObject {
 
     private var selectedVoice: AVSpeechSynthesisVoice? { Self.userVoice }
 
-    /// The Apple voice chosen in Settings, or the default English voice. Also used by the cloud
+    /// The Apple voice chosen in Settings, or the default voice for the recognition language. Also used by the cloud
     /// voices' Apple fallback, so the choice lives in one place.
     static var userVoice: AVSpeechSynthesisVoice? {
         // Check if user has selected a specific voice
@@ -50,8 +50,8 @@ final class TTSService: NSObject, ObservableObject {
             return voice
         }
 
-        // Fall back to default English voice
-        return AVSpeechSynthesisVoice(language: "en-US")
+        // Fall back to the default voice for the language the user speaks
+        return AVSpeechSynthesisVoice(language: SettingsManager.shared.settings.speechLanguage.rawValue)
     }
 
     /// Get all available voices for a language
@@ -134,7 +134,7 @@ final class TTSService: NSObject, ObservableObject {
     private func enqueue(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = selectedVoice
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        utterance.rate = SpeechRate.appleUtteranceRate
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0
         pendingUtterances += 1

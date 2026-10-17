@@ -55,6 +55,8 @@ final class KokoroTTSService: ObservableObject {
 
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    /// Between the player and the mixer: plays at the reply speed from Settings.
+    private let timePitch = AVAudioUnitTimePitch()
     private var audioReady = false
 
     private init() {
@@ -318,7 +320,9 @@ final class KokoroTTSService: ObservableObject {
         do {
             if !audioReady {
                 audioEngine.attach(playerNode)
-                audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+                audioEngine.attach(timePitch)
+                audioEngine.connect(playerNode, to: timePitch, format: format)
+                audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
                 // Forward what we play to the session recorder (cheap no-op when not recording):
                 // the assistant's voice is mixed into demo recordings digitally, since the mic
                 // path buries it under ambient noise.
@@ -328,6 +332,8 @@ final class KokoroTTSService: ObservableObject {
                 }
                 audioReady = true
             }
+            timePitch.rate = SpeechRate.multiplier
+            timePitch.bypass = SpeechRate.multiplier == 1   // normal speed: untouched audio
             if !audioEngine.isRunning { try audioEngine.start() }
             if restartPlayer {
                 playerNode.stop()

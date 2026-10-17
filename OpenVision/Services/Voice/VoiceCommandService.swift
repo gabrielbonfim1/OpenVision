@@ -84,7 +84,8 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Speech Recognition
 
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    /// Recreated when the recognition language changes in Settings; see `currentRecognizer`.
+    private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
@@ -271,7 +272,7 @@ final class VoiceCommandService: ObservableObject {
         // Start recognition task after audio engine is running
         recognitionGeneration += 1
         let generation = recognitionGeneration
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+        recognitionTask = currentRecognizer()?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             Task { @MainActor in
                 guard let self, generation == self.recognitionGeneration else { return }  // zombie task
                 self.handleRecognitionResult(result: result, error: error)
@@ -284,6 +285,34 @@ final class VoiceCommandService: ObservableObject {
         print("[VoiceCommand] Started listening - audio engine running")
     }
 
+    /// The recognizer for the language chosen in Settings, made anew when it changes so the next
+    /// recognition task picks the new language up.
+    private func currentRecognizer() -> SFSpeechRecognizer? {
+        let locale = SettingsManager.shared.settings.speechLanguage.rawValue
+        if speechRecognizer?.locale.identifier != locale {
+            speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
+        }
+        return speechRecognizer
+    }
+
+    /// How a Portuguese recognizer writes "Ok Vision": the English word usually comes out as
+    /// "visão" (and "ok" as "okay" or "oque").
+    private static let portugueseWakeVariations = ["ok visão", "okay visão", "oque visão", "ok vision", "oi visão", "ei visão"]
+
+    /// Wake phrase spellings to look for, in the user's language.
+    private var wakeVariations: [String] {
+        let english = [
+            "ok vision", "okay vision", "o.k. vision", "o k vision",
+            "hey vision", "hi vision",
+            // Common misrecognitions
+            "a vision", "heavy vision", "have vision", "obey vision", "oak vision"
+        ]
+        let custom = wakeWord.lowercased()
+        let builtIn = SettingsManager.shared.settings.speechLanguage == .portugueseBrazil
+            ? Self.portugueseWakeVariations + english : english
+        return custom.isEmpty ? builtIn : [custom] + builtIn
+    }
+
     /// Prime the recognizer for the wake phrase and short-phrase detection. `contextualStrings`
     /// biases recognition toward "Ok Vision", which is the single biggest factor in reliably
     /// hearing the wake word over the low-quality glasses Bluetooth-HFP mic (8 kHz). `.search`
@@ -292,6 +321,9 @@ final class VoiceCommandService: ObservableObject {
         request.shouldReportPartialResults = true
         request.taskHint = .search
         var phrases = ["Ok Vision", "Okay Vision", "Hey Vision", "Vision"]
+        if SettingsManager.shared.settings.speechLanguage == .portugueseBrazil {
+            phrases = ["Ok Visão", "Okay Visão"] + phrases
+        }
         if !wakeWord.isEmpty { phrases.insert(wakeWord, at: 0) }
         request.contextualStrings = phrases
     }
@@ -449,7 +481,7 @@ final class VoiceCommandService: ObservableObject {
         // Start new recognition task
         recognitionGeneration += 1
         let generation = recognitionGeneration
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
+        recognitionTask = currentRecognizer()?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             Task { @MainActor in
                 guard let self, generation == self.recognitionGeneration else { return }  // zombie task
                 self.handleRecognitionResult(result: result, error: error)
@@ -539,7 +571,7 @@ final class VoiceCommandService: ObservableObject {
         case .listening, .conversationMode:
             // Strip wake word from transcription (like xmeta does)
             var command = transcription
-            for ww in [wakeWord.lowercased(), "ok vision", "okay vision", "hey vision", "hi vision"] {
+            for ww in wakeVariations {
                 if let range = command.lowercased().range(of: ww) {
                     command = String(command[range.upperBound...]).trimmingCharacters(in: .whitespaces)
                     break
@@ -635,9 +667,13 @@ final class VoiceCommandService: ObservableObject {
     private func isStopPhrase(_ text: String) -> Bool {
         guard detectWakeWord(in: text, bypassCooldown: true) else { return false }
         let lower = text.lowercased()
-        if lower.contains("video") || lower.contains("stream") { return false }
+        if lower.contains("video") || lower.contains("vídeo") || lower.contains("stream") { return false }
         let stopWords = ["stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel"]
-        return stopWords.contains { lower.contains($0) }
+        if stopWords.contains(where: { lower.contains($0) }) { return true }
+        // Portuguese by whole word: "pare" sits inside "parece", and "para" (also "to") is left
+        // out entirely, since "ok visão, manda para a Ana…" is a command, not a stop.
+        let words = Set(lower.components(separatedBy: CharacterSet.letters.inverted))
+        return !words.isDisjoint(with: ["pare", "parar", "chega", "silêncio", "cala", "cancela"])
     }
 
     /// True when a wake-word variation sits at (or very near) the START of the transcript — i.e. a
@@ -646,13 +682,7 @@ final class VoiceCommandService: ObservableObject {
     /// word up front rejects those phantoms while still catching a real interrupt.
     private func wakeWordAtStart(_ text: String) -> Bool {
         let lower = text.lowercased()
-        let variations = [
-            wakeWord.lowercased(),
-            "ok vision", "okay vision", "o.k. vision", "o k vision",
-            "hey vision", "hi vision",
-            "a vision", "heavy vision", "have vision", "obey vision", "oak vision"
-        ]
-        for v in variations {
+        for v in wakeVariations {
             if let r = lower.range(of: v) {
                 // Characters of speech before the wake word. A little leeway ("uh, ok vision")
                 // is fine; a whole sentence in front of it means it's echo, not a barge-in.
@@ -667,28 +697,7 @@ final class VoiceCommandService: ObservableObject {
         guard bypassCooldown || !wakeWordCooldownActive else { return false }
 
         let lowercased = text.lowercased()
-        let wakeWordLower = wakeWord.lowercased()
-
-        // Check for exact match or common variations/misrecognitions
-        let variations = [
-            wakeWordLower,
-            // OK Vision variants (most reliable)
-            "ok vision",
-            "okay vision",
-            "o.k. vision",
-            "o k vision",
-            // Ok Vision variants
-            "hey vision",
-            "hi vision",
-            // Common misrecognitions
-            "a vision",
-            "heavy vision",
-            "have vision",
-            "obey vision",
-            "oak vision"
-        ]
-
-        let detected = variations.contains { lowercased.contains($0) }
+        let detected = wakeVariations.contains { lowercased.contains($0) }
         if detected {
             print("[VoiceCommand] Detected wake word in: '\(text)'")
         }
@@ -698,16 +707,7 @@ final class VoiceCommandService: ObservableObject {
     /// Extract command text after wake word
     private func extractCommandAfterWakeWord(_ text: String) -> String {
         let lowercased = text.lowercased()
-        let wakeWordLower = wakeWord.lowercased()
-
-        let variations = [
-            wakeWordLower,
-            "ok vision", "okay vision", "o.k. vision", "o k vision",
-            "hey vision", "hi vision",
-            "a vision", "heavy vision", "have vision", "obey vision", "oak vision"
-        ]
-
-        for variation in variations {
+        for variation in wakeVariations {
             if let range = lowercased.range(of: variation) {
                 let afterWakeWord = String(text[range.upperBound...])
                     .trimmingCharacters(in: .whitespaces)
@@ -747,9 +747,7 @@ final class VoiceCommandService: ObservableObject {
     private func handleCommandComplete(_ text: String) {
         // Remove wake word from beginning
         var command = text
-        let wakeWordLower = wakeWord.lowercased()
-
-        for prefix in [wakeWordLower, "hey vision", "ok vision", "okay vision"] {
+        for prefix in wakeVariations {
             if command.lowercased().hasPrefix(prefix) {
                 command = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
                 break

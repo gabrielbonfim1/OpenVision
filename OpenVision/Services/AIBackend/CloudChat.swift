@@ -176,8 +176,9 @@ enum CloudChat {
         if let error = obj["error"] as? [String: Any], let message = error["message"] as? String {
             return message
         }
-        // xAI returns {"error": "…"} / {"code": …, "error": "…"} with a plain string.
-        return obj["error"] as? String
+        // xAI returns {"error": "…"} / {"code": …, "error": "…"} with a plain string; FastAPI
+        // servers (the Hermes dashboard) {"detail": "…"}.
+        return obj["error"] as? String ?? obj["detail"] as? String
     }
 }
 

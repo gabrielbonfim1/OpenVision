@@ -147,6 +147,7 @@ enum TTSEngineType: String, Codable, CaseIterable, Identifiable {
     case kokoro = "kokoro"
     case grok = "grok"
     case openAI = "openai"
+    case hermes = "hermes"
     var id: String { rawValue }
     var displayName: String {
         switch self {
@@ -154,6 +155,20 @@ enum TTSEngineType: String, Codable, CaseIterable, Identifiable {
         case .kokoro: return "Kokoro (natural, on-device)"
         case .grok: return "Grok (natural, cloud)"
         case .openAI: return "OpenAI (natural, cloud)"
+        case .hermes: return "Hermes (your agent's voice)"
+        }
+    }
+}
+
+/// The language the speech recognizer listens for. Replies follow whatever the backend answers in.
+enum SpeechLanguage: String, Codable, CaseIterable, Identifiable {
+    case english = "en-US"
+    case portugueseBrazil = "pt-BR"
+    var id: String { rawValue }
+    var displayName: String {
+        switch self {
+        case .english: return "English (US)"
+        case .portugueseBrazil: return "Português (Brasil)"
         }
     }
 }
@@ -261,6 +276,9 @@ struct AppSettings: Codable, Equatable {
     /// Wake word phrase (default: "Ok Vision")
     var wakeWord: String = "Ok Vision"
 
+    /// Language for speech recognition (commands and wake word)
+    var speechLanguage: SpeechLanguage = .english
+
     /// Whether wake word detection is enabled (OpenClaw mode only)
     var wakeWordEnabled: Bool = true
 
@@ -279,6 +297,9 @@ struct AppSettings: Codable, Equatable {
 
     /// Selected Kokoro voice (e.g. "af_heart"). First letter: a = American, b = British.
     var kokoroVoice: String = "af_heart"
+
+    /// How fast replies are played: 1 (normal), 1.25, 1.5 or 2. Applies to every speech engine.
+    var speechRate: Double = 1.0
 
     // MARK: - Telemetry (opt-in, self-hosted)
 

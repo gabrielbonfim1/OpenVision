@@ -61,7 +61,7 @@ final class GrokTests: XCTestCase {
     func testDecodesWAVLikeXAIReturns() throws {
         // 24 kHz mono 16-bit PCM — the format xAI's TTS returns for codec "wav".
         let samples: [Int16] = (0..<2400).map { Int16(sin(Double($0) / 10) * 8000) }
-        let buffer = try XCTUnwrap(CloudTTSService.decodeWAV(wav(samples, sampleRate: 24000)))
+        let buffer = try XCTUnwrap(CloudTTSService.decodeAudio(wav(samples, sampleRate: 24000)))
         XCTAssertEqual(buffer.frameLength, 2400)
         XCTAssertEqual(buffer.format.sampleRate, 24000)
         XCTAssertEqual(buffer.format.channelCount, 1)

@@ -1,5 +1,6 @@
 // OpenVision - CloudTTSService.swift
-// Cloud neural voices: xAI Grok (SuperGrok or xAI API key) and OpenAI (API key).
+// Cloud neural voices: xAI Grok (SuperGrok or xAI API key), OpenAI (API key), and the user's own
+// Hermes agent (its configured voice, e.g. ElevenLabs, through the dashboard sign-in).
 //
 // Both APIs return a whole clip per request (~1s for a 4s sentence), so — like Kokoro — replies
 // are spoken sentence by sentence. Unlike Kokoro there's no GPU to share, so sentences are
@@ -8,7 +9,7 @@
 // and the voice is mixed into session recordings the same way Kokoro's is.
 //
 // The engine is provider-agnostic; a CloudVoiceProvider only says whether it can speak, which
-// voice is selected, and how to turn one sentence into WAV bytes.
+// voice is selected, and how to turn one sentence into audio bytes (WAV, or MP3 from Hermes).
 //
 // A sentence whose request fails (a 429, a timeout, no network) is spoken in the Apple voice in
 // its place in the queue, so the reply has no silent hole. After two failures in a row the rest
@@ -23,7 +24,7 @@ struct CloudVoiceProvider {
     let name: String
     let isReady: @MainActor () -> Bool
     let selectedVoice: @MainActor () -> String
-    /// One sentence in `voice` → WAV bytes (plus the HTTP response, for the status code).
+    /// One sentence in `voice` → WAV or MP3 bytes (plus the HTTP response, for the status code).
     let synthesize: @MainActor (_ text: String, _ voice: String) async throws -> (Data, URLResponse)
 }
 
@@ -32,6 +33,7 @@ final class CloudTTSService: ObservableObject {
 
     static let grok = CloudTTSService(provider: .grok)
     static let openAI = CloudTTSService(provider: .openAI)
+    static let hermes = CloudTTSService(provider: .hermes)
 
     @Published var isSpeaking = false
     /// Why the last sentence couldn't be synthesized (bad key, no credits, offline) — shown in the
@@ -45,6 +47,8 @@ final class CloudTTSService: ObservableObject {
 
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    /// Between the player and the mixer: plays at the reply speed from Settings.
+    private let timePitch = AVAudioUnitTimePitch()
     private var audioReady = false
     /// The format the player node is connected with (the first clip's, normally 24 kHz mono).
     private var playerFormat: AVAudioFormat?
@@ -268,7 +272,7 @@ final class CloudTTSService: ObservableObject {
                 lastFailure = message
                 return nil
             }
-            return try Self.decodeWAV(data)
+            return try Self.decodeAudio(data)
         } catch {
             // stop() cancels in-flight requests; URLSession reports that as URLError(.cancelled),
             // not CancellationError. That's a barge-in, not a failure, and recording it would
@@ -282,9 +286,11 @@ final class CloudTTSService: ObservableObject {
         }
     }
 
-    /// WAV bytes → a float PCM buffer in the file's own format (24 kHz mono from both providers).
-    nonisolated static func decodeWAV(_ data: Data) throws -> AVAudioPCMBuffer? {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cloud-tts-\(UUID().uuidString).wav")
+    /// WAV or MP3 bytes → a float PCM buffer in the file's own format (24 kHz mono from Grok and
+    /// OpenAI; whatever the Hermes server's provider returns).
+    nonisolated static func decodeAudio(_ data: Data) throws -> AVAudioPCMBuffer? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-tts-\(UUID().uuidString).\(audioFileExtension(data))")
         try data.write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         let file = try AVAudioFile(forReading: url)
@@ -294,13 +300,24 @@ final class CloudTTSService: ObservableObject {
         return buffer.frameLength > 0 ? buffer : nil
     }
 
+    /// The file extension for these audio bytes, from their header; AVAudioFile goes by it.
+    nonisolated static func audioFileExtension(_ data: Data) -> String {
+        let head = [UInt8](data.prefix(4))
+        if head.starts(with: Array("RIFF".utf8)) { return "wav" }
+        if head.starts(with: Array("OggS".utf8)) { return "ogg" }
+        if head.starts(with: Array("fLaC".utf8)) { return "flac" }
+        return "mp3"   // "ID3" tag or a bare MPEG frame
+    }
+
     // MARK: - Playback
 
     private func schedule(_ buffer: AVAudioPCMBuffer, restartPlayer: Bool) {
         do {
             if !audioReady {
                 audioEngine.attach(playerNode)
-                audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: buffer.format)
+                audioEngine.attach(timePitch)
+                audioEngine.connect(playerNode, to: timePitch, format: buffer.format)
+                audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: buffer.format)
                 // Forward what we play to the session recorder (cheap no-op when not recording),
                 // matching Kokoro: the assistant's voice is mixed into demo recordings digitally.
                 let tapFormat = audioEngine.mainMixerNode.outputFormat(forBus: 0)
@@ -316,9 +333,13 @@ final class CloudTTSService: ObservableObject {
                 playerEpoch += 1
                 pendingBuffers = 0
                 audioEngine.disconnectNodeOutput(playerNode)
-                audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: buffer.format)
+                audioEngine.disconnectNodeOutput(timePitch)
+                audioEngine.connect(playerNode, to: timePitch, format: buffer.format)
+                audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: buffer.format)
                 self.playerFormat = buffer.format
             }
+            timePitch.rate = SpeechRate.multiplier
+            timePitch.bypass = SpeechRate.multiplier == 1   // normal speed: untouched audio
             if !audioEngine.isRunning { try audioEngine.start() }
             if restartPlayer {
                 playerNode.stop()
@@ -371,6 +392,7 @@ final class AppleFallbackSpeaker: NSObject, AVSpeechSynthesizerDelegate {
         stop()
         let utterance = AVSpeechUtterance(string: sentence)
         utterance.voice = TTSService.userVoice
+        utterance.rate = SpeechRate.appleUtteranceRate
         utterances += 1
         let id = ObjectIdentifier(utterance)
         await withCheckedContinuation { continuation in
@@ -516,4 +538,60 @@ extension CloudTTSService {
     nonisolated static let openAIVoices: [CloudVoice] = [
         "alloy", "ash", "ballad", "cedar", "coral", "echo", "fable", "marin", "nova", "onyx", "sage", "shimmer", "verse",
     ].map { CloudVoice(id: $0, name: $0.capitalized, gender: "") }
+}
+
+// MARK: - Hermes
+
+extension CloudVoiceProvider {
+    /// Speaks in the voice the user's Hermes agent is set up with (`tts:` in its config.yaml, e.g.
+    /// ElevenLabs), via the dashboard's /api/audio/speak, which Hermes Desktop uses for its voice
+    /// mode. That route is behind the dashboard login, so this needs the Username and Password
+    /// connection to Hermes. The server picks the voice; there's nothing to choose here.
+    static let hermes = CloudVoiceProvider(
+        name: "HermesTTS",
+        isReady: {
+            let settings = SettingsManager.shared.settings
+            return settings.hermesAuthMode == .password && settings.isHermesConfigured
+        },
+        selectedVoice: { "hermes" },
+        synthesize: { text, _ in
+            guard let base = HermesDashboard.base(from: SettingsManager.shared.settings.hermesDashboardURL) else {
+                throw URLError(.badURL)
+            }
+            let provider = HermesDashboard.provider(base: base)
+            let body = try JSONSerialization.data(withJSONObject: ["text": text])
+            var result: (Data, URLResponse)?
+            // One forced token refresh on 401, like the gateway's ticket request.
+            for attempt in 0..<2 {
+                let credentials = try await OAuthTokenStore.shared.freshCredentials(for: provider, force: attempt > 0)
+                var request = URLRequest(url: base.appendingPathComponent("api/audio/speak"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
+                request.httpBody = body
+                request.timeoutInterval = CloudTTSService.clipTimeout
+                result = try await URLSession.shared.data(for: request)
+                if (result?.1 as? HTTPURLResponse)?.statusCode != 401 { break }
+            }
+            guard let (data, response) = result else { throw URLError(.unknown) }
+            guard (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) == true else {
+                return (data, response)
+            }
+            guard let audio = CloudTTSService.hermesSpeakAudio(data) else {
+                throw HermesService.HermesError.server("the voice reply had no audio")
+            }
+            return (audio, response)
+        }
+    )
+}
+
+extension CloudTTSService {
+    /// The audio bytes in a /api/audio/speak reply: `{"ok": true, "data_url": "data:audio/mpeg;base64,…"}`.
+    nonisolated static func hermesSpeakAudio(_ data: Data) -> Data? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let dataURL = json["data_url"] as? String,
+              let comma = dataURL.firstIndex(of: ","),
+              dataURL[..<comma].hasSuffix(";base64") else { return nil }
+        return Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...]))
+    }
 }

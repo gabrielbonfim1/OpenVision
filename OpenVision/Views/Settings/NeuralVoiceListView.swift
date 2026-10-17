@@ -1,5 +1,5 @@
 // OpenVision - NeuralVoiceListView.swift
-// Voice picker for the neural speech engines (Kokoro, Grok, OpenAI): tap a row to choose it, tap
+// Voice picker for the neural speech engines (Kokoro, Grok, OpenAI, Hermes): tap a row to choose it, tap
 // its ▶ to hear a sample first — the same pattern as the Apple voice list (VoiceSelectionView).
 
 import SwiftUI
@@ -23,6 +23,7 @@ struct NeuralVoiceListView: View {
     @ObservedObject private var kokoroTTS = KokoroTTSService.shared
     @ObservedObject private var grokTTS = CloudTTSService.grok
     @ObservedObject private var openAITTS = CloudTTSService.openAI
+    @ObservedObject private var hermesTTS = CloudTTSService.hermes
 
     static let sampleText = "Hello! This is how I sound. I'm your AI assistant."
 
@@ -63,6 +64,7 @@ struct NeuralVoiceListView: View {
         case .kokoro: return kokoroTTS.isModelReady
         case .grok: return grokTTS.isReady
         case .openAI: return openAITTS.isReady
+        case .hermes: return hermesTTS.isReady
         case .appleSystem: return true
         }
     }
@@ -72,6 +74,7 @@ struct NeuralVoiceListView: View {
         case .kokoro: return "Download the Kokoro model to hear samples."
         case .grok: return "Sign in to SuperGrok or add an xAI API key in Grok Settings to hear samples."
         case .openAI: return "Add an OpenAI API key (with credits) in OpenAI Settings to hear samples. A ChatGPT subscription doesn't cover speech."
+        case .hermes: return "Sign in to Hermes with Username and Password in Hermes Settings to hear samples."
         case .appleSystem: return ""
         }
     }
@@ -81,12 +84,13 @@ struct NeuralVoiceListView: View {
         switch engine {
         case .grok: return grokTTS.lastFailure
         case .openAI: return openAITTS.lastFailure
+        case .hermes: return hermesTTS.lastFailure
         case .kokoro, .appleSystem: return nil
         }
     }
 
     private var isAnySpeaking: Bool {
-        kokoroTTS.isSpeaking || grokTTS.isSpeaking || openAITTS.isSpeaking
+        kokoroTTS.isSpeaking || grokTTS.isSpeaking || openAITTS.isSpeaking || hermesTTS.isSpeaking
     }
 
     /// The available voices, plus the saved one if the list doesn't have it (yet).

@@ -1,5 +1,5 @@
 // OpenVision - HermesTests.swift
-// Hermes server address handling, the plain-http warning, and the capabilities check.
+// Hermes server address handling, the plain-http warning, the capabilities check, and its voice.
 
 import XCTest
 @testable import OpenVision
@@ -256,5 +256,29 @@ final class HermesTests: XCTestCase {
         XCTAssertTrue(prompt.contains("1-3 short sentences"))
         XCTAssertTrue(prompt.hasSuffix("Call me Rafa."))
         XCTAssertFalse(HermesService.systemPrompt(custom: "  ").contains("\n\n"))
+    }
+
+    // MARK: - Voice
+
+    func testSpeakReplyGivesTheAudioBytes() {
+        let mp3 = Data([0x49, 0x44, 0x33, 0x04, 0x00])
+        let reply = #"{"ok": true, "data_url": "data:audio/mpeg;base64,\#(mp3.base64EncodedString())", "mime_type": "audio/mpeg"}"#
+        XCTAssertEqual(CloudTTSService.hermesSpeakAudio(Data(reply.utf8)), mp3)
+    }
+
+    func testSpeakReplyWithoutAudioIsNil() {
+        XCTAssertNil(CloudTTSService.hermesSpeakAudio(Data(#"{"detail": "Speech synthesis failed"}"#.utf8)))
+        XCTAssertNil(CloudTTSService.hermesSpeakAudio(Data(#"{"data_url": "data:audio/mpeg,raw"}"#.utf8)))
+    }
+
+    func testAudioExtensionFromHeader() {
+        XCTAssertEqual(CloudTTSService.audioFileExtension(Data("RIFF....WAVE".utf8)), "wav")
+        XCTAssertEqual(CloudTTSService.audioFileExtension(Data("OggS".utf8)), "ogg")
+        XCTAssertEqual(CloudTTSService.audioFileExtension(Data("ID3\u{04}".utf8)), "mp3")
+        XCTAssertEqual(CloudTTSService.audioFileExtension(Data([0xFF, 0xFB, 0x90, 0x00])), "mp3")
+    }
+
+    func testFastAPIErrorDetailIsReadable() {
+        XCTAssertEqual(CloudChat.errorMessage(from: Data(#"{"detail": "Text is required"}"#.utf8)), "Text is required")
     }
 }
